@@ -1,0 +1,6 @@
+<launch>
+  <include file="$(find dyros_jet_launch)/launch/common.launch">
+    <arg name="run_mode" value="simulation" />
+  </include>
+</launch>
+
