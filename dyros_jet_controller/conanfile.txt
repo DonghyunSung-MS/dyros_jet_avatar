@@ -1,7 +1,10 @@
 [requires]
 qpoases/3.2.1
 rbdl_jet/0.1
+toml11/3.1.0
 eigen/3.3.5@conan/stable
+h5cpp11/0.1
+
 [generators]
 cmake_find_package
 cmake_paths

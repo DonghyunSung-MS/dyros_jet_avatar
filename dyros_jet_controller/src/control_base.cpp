@@ -153,7 +153,7 @@ void ControlBase::compute()
   joint_controller_.updateControlMask(control_mask_);
   walking_controller_.updateControlMask(control_mask_);
   moveit_controller_.updateControlMask(control_mask_);
-  retarget_controller_.updateControlMask(control_mask_);
+  // retarget_controller_.updateControlMask(control_mask_);
 
 
   task_controller_.writeDesired(control_mask_, desired_q_);
@@ -162,7 +162,7 @@ void ControlBase::compute()
   walking_controller_.writeDesired(control_mask_, desired_q_);
   moveit_controller_.writeDesired(control_mask_, desired_q_);
   retarget_controller_.writeDesired(control_mask_, desired_q_);
-  
+
   tick_ ++;
   control_time_ = tick_ / Hz_;
 

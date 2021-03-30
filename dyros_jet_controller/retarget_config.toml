@@ -1,0 +1,20 @@
+hand_coeff = 100.0
+elbow_coeff = 1.0
+
+rot_gain = 10.0
+trans_gain = 100.0
+
+# joint 3 shoulder to hand left arm -> right arm opposite sign
+joint_limit_lower = [-3.0, -3.0, -1.5, -3.0, -1.5, -3.0, -1.5]
+joint_limit_upper = [3.0, 3.0, 1.5, 0.1, 1.5, 3.0, 1.5]
+
+joint_vel_limit_lower = [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+joint_vel_limit_upper = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+# task 6 linear(3), angular(3)
+task_vel_limit_lower = [-2.0, -2.0,-2.0, -1.0,-1.0,-1.0]
+task_vel_limit_upper = [2.0, 2.0, 2.0, 1.0, 1.0, 1.0]
+
+
+data_file_path = "/home/dhsung/exp_data/"
+data_file_name = "final_exp.hdf5"
+
