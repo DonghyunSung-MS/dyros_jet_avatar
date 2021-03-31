@@ -1,12 +1,16 @@
+
+[Robot]
+rot_gain = 20.0
+trans_gain = 200.0
+arm_length_max = 0.60
+shoulder_width = 0.34
+
+[QPVariable]
 hand_coeff = 100.0
 elbow_coeff = 1.0
-
-rot_gain = 10.0
-trans_gain = 100.0
-
 # joint 3 shoulder to hand left arm -> right arm opposite sign
-joint_limit_lower = [-3.0, -3.0, -1.5, -3.0, -1.5, -3.0, -1.5]
-joint_limit_upper = [3.0, 3.0, 1.5, 0.1, 1.5, 3.0, 1.5]
+joint_limit_lower = [-3.0, -3.0, -1.6, -3.0, -1.5, -3.0, -1.5]
+joint_limit_upper = [3.0, 3.0, 1.6, 0.1, 1.5, 3.0, 1.5]
 
 joint_vel_limit_lower = [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
 joint_vel_limit_upper = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
@@ -14,7 +18,30 @@ joint_vel_limit_upper = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 task_vel_limit_lower = [-2.0, -2.0,-2.0, -1.0,-1.0,-1.0]
 task_vel_limit_upper = [2.0, 2.0, 2.0, 1.0, 1.0, 1.0]
 
-
+[Exp]
 data_file_path = "/home/dhsung/exp_data/"
-data_file_name = "final_exp.hdf5"
+data_file_name = "test.hdf5"
+
+# retarget variable
+[Retarget]
+real_exp = false
+attention_position = [-0.112291, 0.255385, -0.55650, -0.0661023, -0.263583, -0.561731] #left/right chest2hand
+t_position = [-0.253086, 0.792363, 0.028386, -0.111356, -0.802262, 0.02793] #left/right chest2hand
+forward_position = [0.479395, 0.267396, 0.084233, 0.510383, -0.120239, 0.0835238] #left/right chest2hand
+tracker_offset = [-0.05, 0.0 , 0.0]
+# row major
+still_pose_control_time = 5.0
+still_criteria = 0.1
+left_still_pose = [1.0, 0.0, 0.0, -0.0749104, 0.0, 0.044329, 0.999017, 0.230669, 0.0, -0.999017, 0.044329, -0.18]
+right_still_pose = [0.0706491, 0.0, -0.997501, -0.0749098, -0.996526, 0.0442061, -0.0705761, -0.23062, 0.0440893, 0.999022, 0.00321192, -0.18]
+
+# LEFT_EE : -0.0749104   0.230669  -0.175384
+#            1 -9.02524e-05 -8.88045e-05
+#   9.2718e-05     0.044329     0.999017
+#  -8.6227e-05    -0.999017     0.044329
+# RIGHT_EE : -0.0749098   -0.23062   -0.17541
+#   0.0706491 8.91134e-05   -0.997501
+#   -0.996526   0.0442061  -0.0705761
+#   0.0440893    0.999022  0.00321192
+
 

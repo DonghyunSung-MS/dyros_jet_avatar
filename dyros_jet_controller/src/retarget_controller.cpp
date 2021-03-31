@@ -10,94 +10,53 @@ namespace dyros_jet_controller
 
 void RetargetController::compute()
 {
-  ros::param::get("/retarget/control_flag", control_flag);
-  ros::param::get("/retarget/initpose_flag", initpose_flag);
-  ros::param::get("/retarget/save_flag", save_flag);
+  ros::param::get("/retarget/control_flag", control_flag_);
+  ros::param::get("/retarget/initpose_flag", initpose_flag_);
+  ros::param::get("/retarget/save_flag", save_flag_);
+  ros::param::get("/retarget/still_pose_flag", still_pose_flag_);
 
+  poseCalibration(); //human motion calibration
+  updateKinematics(desired_q_virtual_, desired_q_dot_virtual_);
 
-  if(!control_flag)
+  //go to still pose
+  if(!initpose_flag_)
   {
-    setInitPoseArm();
+    setInitRobotPose();
     // data_thread = std::thread(&RetargetController::logging, this);
     // data_thread.detach();
   }
   
-  updateKinematics(desired_q_virtual, desired_q_dot_virtual);
+  if(initpose_flag_ && !still_pose_flag_)
+  {
+    if (!still_pose_start_flag_)
+    {
+      still_pose_start_flag_ = true;
+      still_pose_start_time_ = control_time_;
+    }
 
-  if (control_flag && initpose_flag)
-    computeRetarget();
-    logging();
+    setStillPose();
+    armJacobianControl();
+    if (control_time_ > still_pose_start_time_ + still_pose_control_time_)
+    {
+      still_pose_flag_ = true;
+      ros::param::set("/retarget/still_pose_flag", true);
+      setInitRobotPose();
+
+    }
+  }
 
 
+  if (control_flag_ && initpose_flag_)
+  {
+    //map_human2robot data
+    //processingrobotmotion - filter(lowpass)
+    //need waist control
+    armJacobianControl();
+    // logging();
+
+  }
   // std::cout<<"diff q "<<(desired_q_.segment<14>(joint_start_id_[0]) - current_q_.segment<14>(joint_start_id_[0])).norm()<<std::endl;
   // std::cout<<"\n\n";
-}
-
-void RetargetController::logging()
-{
-  mtx_lock.lock();
-
-  Eigen::Matrix<double, 3, 16> T_current, T_desired, T_command;
-
-  T_current.setZero();
-  T_desired.setZero();
-  T_command.setZero();
-
-  for(int i=0;i<4;i++)
-  {
-    //desired
-    Eigen::Matrix<double,3,4> T_temp;
-    Eigen::Isometry3d T1, T2;
-
-    T_temp.setZero();
-    getTransformFromID(model_desired_.GetBodyId(arm_joint_name[i]), T1);
-    T_temp<<T1.linear(), T1.translation();
-    T_desired.block(0, i*4, 3, 4) = T_temp;
-
-    T_temp.setZero();
-    T_temp<<master_pose_arm_poses_[i].linear(), master_pose_arm_poses_[i].translation();
-    T_command.block(0, i*4, 3, 4) = T_temp;
-
-    T_temp.setZero();
-    model_.getTransformFromID(model_desired_.GetBodyId(arm_joint_name[i]) - 6, T2);
-    T_temp<<T2.linear(), T2.translation();
-    T_current.block(0, i*4, 3, 4) = T_temp;
-  }
-
-  stream_T_current.push_back(T_current);
-  stream_T_desired.push_back(T_desired);
-  stream_T_command.push_back(T_command);
-
-  //saving
-  if (save_flag)
-  {
-    std::cout<<"saved"<<std::endl;
-    Eigen::MatrixXd V(3*stream_T_current.size(), 16);
-
-    V.setZero();
-    for(int i=0;i<stream_T_current.size();i++)
-    {
-        V.block(i*3, 0, 3, 16) = stream_T_current.at(i);
-    }
-    hf->write("current", V);
-
-    V.setZero();
-    for(int i=0;i<stream_T_current.size();i++)
-    {
-        V.block(i*3, 0, 3, 16) = stream_T_desired.at(i);
-    }
-    hf->write("desired", V);
-
-    V.setZero();
-    for(int i=0;i<stream_T_current.size();i++)
-    {
-        V.block(i*3, 0, 3, 16) = stream_T_command.at(i);
-    }
-    hf->write("command", V);
-    ros::param::set("/retarget/save_flag", false);
-
-  }
-  mtx_lock.unlock();
 }
 
 void RetargetController::writeDesired(const unsigned int *mask, VectorQd& desired_q)
@@ -105,7 +64,7 @@ void RetargetController::writeDesired(const unsigned int *mask, VectorQd& desire
   for(unsigned int i=11; i<total_dof_; i++)
   {
     
-    if(control_flag)
+    if(initpose_flag_)
     {
       
       desired_q(i) = desired_q_(i);
@@ -113,7 +72,7 @@ void RetargetController::writeDesired(const unsigned int *mask, VectorQd& desire
   }
 }
 
-void RetargetController::computeRetarget()
+void RetargetController::armJacobianControl()
 {
   //calculate jac and pinv jac
   RetargetController::updateArmJacobianFromDesired();
@@ -147,14 +106,35 @@ void RetargetController::updateArmJacobianFromDesired()
   }
 }
 
-
-void RetargetController::setArmTarget(Eigen::Isometry3d T, unsigned int tracker_id)
+void RetargetController::setTrackerTarget(Eigen::Isometry3d T, unsigned int tracker_id)
 {
-  master_pose_arm_poses_prev_[tracker_id - 2] = master_pose_arm_poses_[tracker_id - 2];
-
   //translation
-  master_pose_arm_poses_[tracker_id - 2].translation() = T.translation() + master_pose_arm_poses_init_[tracker_id - 2].translation();
-  master_pose_arm_poses_[tracker_id - 2].linear() = T.linear();
+  master_.tracker_poses_raw_[tracker_id] = T;
+}
+
+void RetargetController::setHMDTarget(Eigen::Isometry3d T)
+{
+  master_.hmd_poses_raw_ = T;
+}
+
+void RetargetController::setPoseCalibrationStatus(int mode)
+{
+  mode_ = mode;
+  ROS_INFO("Current Calibration Mode is %s", calib_mode_[mode]);
+  if (mode == 4) //reset
+  {
+    for(int i = 0; i < 5; i ++) check_pose_calibration_[i] = false;
+  }
+
+}
+
+void RetargetController::setTrackerStatus(bool mode)
+{
+  tracker_status_ = mode;
+  if(!tracker_status_)
+  {
+    ROS_INFO("RETARGET::Tracker is not Working!");
+  }
 }
 
 void RetargetController::getArmJacobian
@@ -163,8 +143,8 @@ void RetargetController::getArmJacobian
   Eigen::MatrixXd full_jacobian(6, DyrosJetModel::MODEL_WITH_VIRTUAL_DOF);
   full_jacobian.setZero();
 
-  RigidBodyDynamics::CalcPointJacobian6D(model_desired_, desired_q_virtual, 
-                                         model_desired_.GetBodyId(arm_joint_name[id]),
+  RigidBodyDynamics::CalcPointJacobian6D(model_desired_, desired_q_virtual_, 
+                                         model_desired_.GetBodyId(arm_joint_name_[id]),
                                          Eigen::Vector3d::Zero(), full_jacobian, false);
 
 
@@ -176,36 +156,63 @@ void RetargetController::getArmJacobian
 
 void RetargetController::updateKinematics(const Eigen::VectorXd& q, const Eigen::VectorXd& qdot)
 {
-  desired_q_virtual.segment<28>(6) = desired_q_.segment<28>(0);
-  desired_q_dot_virtual.segment<28>(6) = desired_q_dot_.segment<28>(0);
+  desired_q_virtual_.segment<28>(6) = desired_q_.segment<28>(0);
+  desired_q_dot_virtual_.segment<28>(6) = desired_q_dot_.segment<28>(0);
   RigidBodyDynamics::UpdateKinematicsCustom(model_desired_, &q, &qdot, NULL);
 }
 
 void RetargetController::getTransformFromID(unsigned int id, Eigen::Isometry3d &transform_matrix)
 {
   transform_matrix.translation() = RigidBodyDynamics::CalcBodyToBaseCoordinates
-      (model_desired_, desired_q_virtual, id, Eigen::Vector3d::Zero(), false);
+      (model_desired_, desired_q_virtual_, id, Eigen::Vector3d::Zero(), false);
   transform_matrix.linear() = RigidBodyDynamics::CalcBodyWorldOrientation
-      (model_desired_, desired_q_virtual, id, false).transpose();
+      (model_desired_, desired_q_virtual_, id, false).transpose();
 }
 
-void RetargetController::setInitPoseArm()
+void RetargetController::setInitRobotPose()
 {
-  ROS_INFO("Pose initialized!");
+  ROS_INFO("RETARGET::Pose initialized!");
   desired_q_ = current_q_;
 
   //init pose setting
-  for (size_t i=0; i<4; i++)
+  for (size_t i=0; i<6; i++)
   { 
     Eigen::Isometry3d T_we;
-    getTransformFromID(model_desired_.GetBodyId(arm_joint_name[i]), T_we);
+    getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[i]), T_we);
 
-    master_pose_arm_poses_init_[i] = T_we;
+    slave_.tracker_poses_init_[i] = T_we;
+    slave_.tracker_poses_raw_[i] = T_we;
+    slave_.tracker_poses_[i] = T_we;
+    slave_.tracker_poses_prev_[i] = T_we;
+    // if (i==3)
+    //   std::cout << "LEFT_EE : "<<T_we.translation().transpose() <<"\n"<<T_we.linear()<<std::endl;
+    // if (i==5)
+    //   std::cout << "RIGHT_EE : "<<T_we.translation().transpose() <<"\n"<<T_we.linear()<<std::endl;
 
-    master_pose_arm_poses_[i] = master_pose_arm_poses_init_[i];
-    master_pose_arm_poses_prev_[i] = master_pose_arm_poses_init_[i];
   }
-  
+  // ROS_INFO("RETARGET::Pose tracker passed!");
+
+  for (size_t i=0; i<2; i++)
+  { 
+    Eigen::Isometry3d T_we;
+    getTransformFromID(model_desired_.GetBodyId(shoulder_rjoint_name_[i]), T_we);
+
+    slave_.shoulder_poses_init_[i] = T_we;
+    // slave_.shoulder_poses_raw_[i] = T_we;
+    slave_.shoulder_poses_[i] = T_we;
+    slave_.shoulder_poses_prev_[i] = T_we;
+  }
+  // Robot arm length and shoulder width
+  // auto T1 = slave_.shoulder_poses_[0].inverse() * slave_.tracker_poses_[3];
+  // auto T2 = slave_.shoulder_poses_[1].inverse() * slave_.tracker_poses_[5];
+
+  // Eigen::Vector3d l_arm_l = T1.translation();
+  // Eigen::Vector3d r_arm_l = T2.translation();
+  // Eigen::Vector3d shoulder_l = slave_.shoulder_poses_[1].translation() - slave_.shoulder_poses_[0].translation();
+  // std::cout<<l_arm_l.norm()<<"\t"<<r_arm_l.norm()<<shoulder_l.norm()<<std::endl;
+    
+  // ROS_INFO("RETARGET::Pose shoulder passed!");
+
 }
 
 Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
@@ -228,19 +235,19 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
   ubA.setZero(num_task_);
 
   Eigen::Isometry3d T_welbow, T_whand;
-  getTransformFromID(model_desired_.GetBodyId(arm_joint_name[elbow_ind]), T_welbow);
-  getTransformFromID(model_desired_.GetBodyId(arm_joint_name[hand_ind]), T_whand);
+  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[elbow_ind + 2]), T_welbow);
+  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[hand_ind + 2]), T_whand);
     
   Eigen::Vector6d hand_vel, elbow_vel;
   //hand velocity
-  Eigen::VectorXd w_error = -DyrosMath::getPhi(T_whand.linear(), master_pose_arm_poses_[hand_ind].linear());
-  Eigen::VectorXd v_error = (master_pose_arm_poses_[hand_ind].translation() - T_whand.translation());
+  Eigen::VectorXd w_error = -DyrosMath::getPhi(T_whand.linear(), slave_.tracker_poses_[hand_ind + 2].linear());
+  Eigen::VectorXd v_error = (slave_.tracker_poses_[hand_ind + 2].translation() - T_whand.translation());
 
   hand_vel << v_error, w_error;
   hand_vel = Kp_task_.asDiagonal() * hand_vel;
 
   //elbow velocity
-  w_error = -DyrosMath::getPhi(T_welbow.linear(), master_pose_arm_poses_[elbow_ind].linear());
+  w_error = -DyrosMath::getPhi(T_welbow.linear(), slave_.tracker_poses_[elbow_ind + 2].linear());
   v_error.setZero();
   elbow_vel << v_error, w_error;
   elbow_vel = Kp_task_.asDiagonal() * elbow_vel;
@@ -299,34 +306,333 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
 void RetargetController::parseToml(std::string &toml_path)
 {
   auto data = toml::parse(toml_path);
+  //parsing robot related data
+  auto& robot = toml::find(data, "Robot");
+  rot_gain_ = toml::find<double>(robot, "rot_gain");
+  trans_gain_ = toml::find<double>(robot, "trans_gain");
+  double arm_length = toml::find<double>(robot, "arm_length_max");
+  slave_.arm_length_[0] = arm_length;
+  slave_.arm_length_[1] = arm_length;
+  slave_.shoulder_width_ = toml::find<double>(robot, "shoulder_width");
 
-  hand_coeff_ = toml::find<double>(data, "hand_coeff");
-  elbow_coeff_ = toml::find<double>(data, "elbow_coeff");
+  //parsing qp variable
+  auto& qp_var = toml::find(data, "QPVariable");
 
-  rot_gain_ = toml::find<double>(data, "rot_gain");
-  trans_gain_ = toml::find<double>(data, "trans_gain");
+  hand_coeff_ = toml::find<double>(qp_var, "hand_coeff");
+  elbow_coeff_ = toml::find<double>(qp_var, "elbow_coeff");
 
-  std::vector<double> tmp = toml::find<std::vector<double>>(data, "joint_limit_lower");
+  std::vector<double> tmp = toml::find<std::vector<double>>(qp_var, "joint_limit_lower");
   joint_limit_lower_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
 
-  tmp = toml::find<std::vector<double>>(data, "joint_limit_upper");
+  tmp = toml::find<std::vector<double>>(qp_var, "joint_limit_upper");
   joint_limit_upper_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
   
-  tmp = toml::find<std::vector<double>>(data, "joint_vel_limit_lower");
+  tmp = toml::find<std::vector<double>>(qp_var, "joint_vel_limit_lower");
   joint_vel_limit_lower_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
 
-  tmp = toml::find<std::vector<double>>(data, "joint_vel_limit_upper");
+  tmp = toml::find<std::vector<double>>(qp_var, "joint_vel_limit_upper");
   joint_vel_limit_upper_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
 
-  tmp = toml::find<std::vector<double>>(data, "task_vel_limit_lower");
+  tmp = toml::find<std::vector<double>>(qp_var, "task_vel_limit_lower");
   task_vel_limit_lower_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
 
-  tmp = toml::find<std::vector<double>>(data, "task_vel_limit_upper");
+  tmp = toml::find<std::vector<double>>(qp_var, "task_vel_limit_upper");
   task_vel_limit_upper_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
 
-  file_path = toml::find<std::string>(data, "data_file_path");
-  file_name = toml::find<std::string>(data, "data_file_name");
+  //parsing retarget data
+  auto& retarget_data = toml::find(data, "Retarget");
+
+  real_exp_flag_ = toml::find<bool>(retarget_data, "real_exp");
+  tmp = toml::find<std::vector<double>>(retarget_data, "attention_position");
+  calib_basis_position_[0] = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
+
+  tmp = toml::find<std::vector<double>>(retarget_data, "t_position");
+  calib_basis_position_[1] = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
+
+  tmp = toml::find<std::vector<double>>(retarget_data, "forward_position");
+  calib_basis_position_[2] = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
+  
+
+  tmp = toml::find<std::vector<double>>(retarget_data, "tracker_offset");
+  tracker_offset_ = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(tmp.data(), tmp.size());
+
+  tmp = toml::find<std::vector<double>>(retarget_data, "left_still_pose");
+  Eigen::MatrixXd T1 = Eigen::Matrix<double, 3, 4, Eigen::RowMajor>::Map(tmp.data());
+  robot_still_pose_[0].translation() = T1.block(0, 3, 3, 1);
+  robot_still_pose_[0].linear() = T1.block(0, 0, 3, 3);
+  
+  tmp = toml::find<std::vector<double>>(retarget_data, "right_still_pose");
+  Eigen::MatrixXd T2 = Eigen::Matrix<double, 3, 4, Eigen::RowMajor>::Map(tmp.data());
+  robot_still_pose_[1].translation() = T2.block(0, 3, 3, 1);
+  robot_still_pose_[1].linear() = T2.block(0, 0, 3, 3);
+
+  still_pose_control_time_ = toml::find<double>(retarget_data, "still_pose_control_time");
+  still_criteria_ = toml::find<double>(retarget_data, "still_criteria");
+
+
+  //parsing experiment data
+  auto& exp_paths = toml::find(data, "Exp");
+  file_path_ = toml::find<std::string>(exp_paths, "data_file_path");
+  file_name_ = toml::find<std::string>(exp_paths, "data_file_name");
+
+  ROS_INFO("RETARGET:: Parsed Toml Config");
 }
 
+void RetargetController::getBasisPosition()
+{
+  if (mode_ > 0 && mode_ < 5)
+  {  
+    ROS_INFO("GET BASIS POSE FROM TRACKER %d, %d", mode_, check_pose_calibration_[mode_]);
+    if (real_exp_flag_)
+      calib_basis_position_[mode_] << master_.tracker_poses_[3].translation() - master_.tracker_poses_[1].translation(),\
+                                      master_.tracker_poses_[5].translation() - master_.tracker_poses_[1].translation();
+    check_pose_calibration_[mode_] = true;
+  }
+}
+
+void RetargetController::setMasterScale() //Assume 3 basis position is acheive;
+{
+  //simpliest shoulder location estimation
+  Eigen::Vector3d lsh_tmp, rsh_tmp;
+  lsh_tmp(0) = (calib_basis_position_[0](0) + calib_basis_position_[1](0)) / 2.0; //x_still, x_t
+  lsh_tmp(1) = (calib_basis_position_[0](1)); //y_still
+  lsh_tmp(2) = (calib_basis_position_[1](2) + calib_basis_position_[2](2)); //z_t, z_forward
+  
+  rsh_tmp(0) = (calib_basis_position_[0](3) + calib_basis_position_[1](3)) / 2.0; //x_still, x_t
+  rsh_tmp(1) = (calib_basis_position_[0](4)); //y_still
+  rsh_tmp(2) = (calib_basis_position_[1](5) + calib_basis_position_[2](5)); //z_t, z_forward
+  
+  //arm length
+  double l_arm_len = 0;
+  double r_arm_len = 0;
+
+  for (int i=0; i<3; i++)
+  {
+    l_arm_len += (lsh_tmp - calib_basis_position_[i].head(3)).norm();
+    r_arm_len += (rsh_tmp - calib_basis_position_[i].tail(3)).norm();
+  }
+
+  l_arm_len /= 3.0;
+  r_arm_len /= 3.0;
+  
+  //shoulder_width
+  double sh_width = (lsh_tmp - rsh_tmp).norm();
+
+  master_.chest2shoulder_offset_[0] = lsh_tmp - master_.tracker_poses_[1].translation();
+  master_.chest2shoulder_offset_[1] = rsh_tmp - master_.tracker_poses_[1].translation();
+
+  master_.shoulder_width_ = sh_width;
+  master_.arm_length_[0] = l_arm_len;
+  master_.arm_length_[1] = r_arm_len;
+  
+  check_pose_calibration_[0] = true;
+}
+
+void RetargetController::poseCalibration()
+{
+  //use only z rotation
+  Eigen::Vector3d master_pelv_rpy;
+	Eigen::Matrix3d master_pelv_yaw_rot;
+	master_pelv_rpy = DyrosMath::rot2Euler(master_.tracker_poses_raw_[0].linear());
+	master_pelv_yaw_rot = DyrosMath::rotateWithZ(master_pelv_rpy(2));
+	master_.tracker_poses_[0].linear() = master_pelv_yaw_rot;
+  master_.tracker_poses_[0].translation() = master_.tracker_poses_raw_[0].translation();
+  
+
+  //raw data into pelv frame
+  for (int i=1; i<6; i++)
+  {
+    master_.tracker_poses_[i] = master_.tracker_poses_[0].inverse() * master_.tracker_poses_raw_[i];
+  }
+
+  master_.tracker_poses_[3].translation() = master_.tracker_poses_[3].linear() * tracker_offset_;
+  master_.tracker_poses_[5].translation() = master_.tracker_poses_[5].linear() * tracker_offset_;
+  
+  if (!check_pose_calibration_[1] && mode_==1) //Attention
+    getBasisPosition();
+  else if(!check_pose_calibration_[2] && mode_==2) //T
+    getBasisPosition();
+  else if(!check_pose_calibration_[3] && mode_==3) //Forward
+    getBasisPosition();
+
+  if (!check_pose_calibration_[0] && check_pose_calibration_[1] && check_pose_calibration_[2] && check_pose_calibration_[3])
+  {
+    ROS_INFO("SET MASTER SCALE");
+    setMasterScale();
+  }
+
+  for (int i=0; i<2; i++)
+  {
+    //T_pelv2chest*T_chest2shoulder
+    master_.shoulder_poses_[i].translation() = master_.chest2shoulder_offset_[i] + master_.tracker_poses_[1].translation();
+    master_.shoulder_poses_[i].linear() = master_.tracker_poses_[1].linear();
+  }
+}
+
+void RetargetController::setStillPose()
+{
+  //translation
+  //left
+  Eigen::Vector3d init_position, final_position, zero_vector;
+  zero_vector.setZero();
+  init_position = slave_.tracker_poses_init_[3].translation();
+  final_position = robot_still_pose_[0].translation();
+  slave_.tracker_poses_[2].translation() = Eigen::Vector3d::Zero();
+  slave_.tracker_poses_[3].translation() = DyrosMath::cubicVector(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
+                                                                  init_position, final_position,
+                                                                  zero_vector, zero_vector);
+  //right
+  init_position = slave_.tracker_poses_init_[5].translation();
+  final_position = robot_still_pose_[1].translation();
+  slave_.tracker_poses_[4].translation() = Eigen::Vector3d::Zero();
+  slave_.tracker_poses_[5].translation() = DyrosMath::cubicVector(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
+                                                                  init_position, final_position,
+                                                                  zero_vector, zero_vector);
+
+  //rotation
+  slave_.tracker_poses_[2].linear() = slave_.tracker_poses_init_[2].linear();
+  slave_.tracker_poses_[3].linear() = DyrosMath::rotationCubic(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
+                                                                  slave_.tracker_poses_init_[3].linear(), robot_still_pose_[0].linear());
+  //right
+  slave_.tracker_poses_[4].linear() = slave_.tracker_poses_init_[4].linear();
+  slave_.tracker_poses_[5].linear() = DyrosMath::rotationCubic(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
+                                                                  slave_.tracker_poses_init_[5].linear(), robot_still_pose_[1].linear());
+        
+}
+
+void RetargetController::mapHuman2RobotMotion()
+{
+  /*
+    solvind A_h w = b_h to get h2r position coefficient
+    A_r * w* = b_r, where b_r represetns mapped_robot position
+  */
+
+  Eigen::Matrix<double, 3, 4> A_h[2], A_r[2];
+  Eigen::Matrix<double, 4, 1> b_h[2], b_r[2];
+  Eigen::MatrixXd A_h_inv[2];
+
+  A_h[0].setZero();
+  A_h[1].setZero();
+
+  for (size_t i=0;i<3;i++)
+  {
+    A_h[0].block(0, i, 3, 1) = calib_basis_position_[i].head(3) - master_.shoulder_poses_[0].translation(); 
+    A_h[1].block(0, i, 3, 1) = calib_basis_position_[i].tail(3) - - master_.shoulder_poses_[1].translation();
+    
+  }
+  A_h[0].block(0, 3, 3, 1) = master_.shoulder_poses_[1].translation() - master_.shoulder_poses_[0].translation() //shoulder
+  A_h[1].block(0, 3, 3, 1) = master_.shoulder_poses_[0].translation() - master_.shoulder_poses_[1].translation() //shoulder
+
+  //human shoulder2hand
+  b_h[0] = mater_.tracker_poses_[3].translation() - master_.shoulder_poses_[0].translation();
+  b_h[1] = mater_.tracker_poses_[5].translation() - master_.shoulder_poses_[1].translation();
+
+  A_r[0].setZero();
+  A_r[1].setZero();
+
+  for (size_t i=0;i<3;i++)
+  {
+    double tmp1 = i - 0.5;
+    double tmp2 = i - 1.5;
+    
+    A_r[0](i, 3- i) = - tmp1 / abs(tmp1) * slave_.arm_length_[0]; //+--
+    A_r[1]((i, 3- i) = - tmp2 / abs(tmp2) *slave_.arm_length_[0]; //++-
+    
+  }
+
+  A_r[0](1, 3) = - slave_.shoulder_width_;
+  A_r[1](1, 3) =   slave_.shoulder_width_;
+  
+  //robot shoulder2hand
+  for (size_t i=0;i<2;i++)
+  {
+    double mag;
+    A_h_inv[i] = A_h[i].transpose() * (A_h[i] * A_h[i].transpose() + 1e-5 * Eigen::MatrixXd::Identity(3, 3)).inverse();
+    b_r[i] = A_r[i] * A_h_inv[i] * b_h[i];
+    //rescale
+    mag = std::max(0.1, std::min(b_r[i].norm(), slave_.arm_length_[i]));
+    b_r[i] = mag * b_r[i].normalized();
+  }
+
+  //robot based2hand
+  Eigen::Isometry3d T_, T_whand;
+  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[3]), T_welbow);
+  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[5]), T_whand);
+  slave_.tracker_posed[3] = 
+  slave_.tracker_posed[5] = 
+  
+
+  
+  
+
+
+}
+
+// void RetargetController::logging()
+// {
+//   // mtx_lock_.lock();
+
+//   Eigen::Matrix<double, 3, 16> T_current, T_desired, T_command;
+
+//   T_current.setZero();
+//   T_desired.setZero();
+//   T_command.setZero();
+
+//   for(int i=0;i<4;i++)
+//   {
+//     //desired
+//     Eigen::Matrix<double,3,4> T_temp;
+//     Eigen::Isometry3d T1, T2;
+
+//     T_temp.setZero();
+//     getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]), T1);
+//     T_temp<<T1.linear(), T1.translation();
+//     T_desired.block(0, i*4, 3, 4) = T_temp;
+
+//     T_temp.setZero();
+//     T_temp<<master_pose_arm_poses_[i].linear(), master_pose_arm_poses_[i].translation();
+//     T_command.block(0, i*4, 3, 4) = T_temp;
+
+//     T_temp.setZero();
+//     model_.getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]) - 6, T2);
+//     T_temp<<T2.linear(), T2.translation();
+//     T_current.block(0, i*4, 3, 4) = T_temp;
+//   }
+
+//   stream_T_current_.push_back(T_current);
+//   stream_T_desired_.push_back(T_desired);
+//   stream_T_command_.push_back(T_command);
+
+//   //saving
+//   if (save_flag_)
+//   {
+//     std::cout<<"saved"<<std::endl;
+//     Eigen::MatrixXd V(3*stream_T_current.size(), 16);
+
+//     V.setZero();
+//     for(int i=0;i<stream_T_current.size();i++)
+//     {
+//         V.block(i*3, 0, 3, 16) = stream_T_current.at(i);
+//     }
+//     hf_->write("current", V);
+
+//     V.setZero();
+//     for(int i=0;i<stream_T_current.size();i++)
+//     {
+//         V.block(i*3, 0, 3, 16) = stream_T_desired.at(i);
+//     }
+//     hf_->write("desired", V);
+
+//     V.setZero();
+//     for(int i=0;i<stream_T_current.size();i++)
+//     {
+//         V.block(i*3, 0, 3, 16) = stream_T_command.at(i);
+//     }
+//     hf_->write("command", V);
+//     ros::param::set("/retarget/save_flag", false);
+
+//   }
+//   mtx_lock_.unlock();
+// }
 
 }

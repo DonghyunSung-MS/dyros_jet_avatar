@@ -54,11 +54,17 @@ ControlBase::ControlBase(ros::NodeHandle &nh, double Hz) :
   shutdown_command_sub_ = nh.subscribe("/dyros_jet/shutdown_command", 1, &ControlBase::shutdownCommandCallback,this);
 
   //retarget subscriber
+  hmd_posture_sub = nh.subscribe("/HMD", 100, &ControlBase::HmdCallback, this);
+
   lhand_tracker_posture_sub = nh.subscribe("/TRACKER3", 100, &ControlBase::LeftHandTrackerCallback, this);
 	rhand_tracker_posture_sub = nh.subscribe("/TRACKER5", 100, &ControlBase::RightHandTrackerCallback, this);
   lelbow_tracker_posture_sub = nh.subscribe("/TRACKER2", 100, &ControlBase::LeftElbowTrackerCallback, this);
 	relbow_tracker_posture_sub = nh.subscribe("/TRACKER4", 100, &ControlBase::RightElbowTrackerCallback, this);
-	
+  chest_tracker_posture_sub = nh.subscribe("/TRACKER1", 100, &ControlBase::ChestTrackerCallback, this);
+	pelvis_tracker_posture_sub = nh.subscribe("/TRACKER0", 100, &ControlBase::PelvisTrackerCallback, this);
+	tracker_status_sub = nh.subscribe("/TRACKERSTATUS", 100, &ControlBase::TrackerStatusCallback, this);
+
+  vive_tracker_pose_calibration_sub = nh.subscribe("/CALIBMODE", 100, &ControlBase::PoseCalibrationCallback, this);
 
   parameterInitialize();
   model_.test();
@@ -369,69 +375,48 @@ void ControlBase::LeftHandTrackerCallback(const VR::matrix_3_4 &msg)
 {
   Eigen::Isometry3d hmd_lhand_pose_raw_;
 
-	hmd_lhand_pose_raw_.linear()(0, 0) = msg.firstRow[0];
-	hmd_lhand_pose_raw_.linear()(0, 1) = msg.firstRow[1];
-	hmd_lhand_pose_raw_.linear()(0, 2) = msg.firstRow[2];
+	hmd_lhand_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_lhand_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_lhand_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
 
-	hmd_lhand_pose_raw_.linear()(1, 0) = msg.secondRow[0];
-	hmd_lhand_pose_raw_.linear()(1, 1) = msg.secondRow[1];
-	hmd_lhand_pose_raw_.linear()(1, 2) = msg.secondRow[2];
-
-	hmd_lhand_pose_raw_.linear()(2, 0) = msg.thirdRow[0];
-	hmd_lhand_pose_raw_.linear()(2, 1) = msg.thirdRow[1];
-	hmd_lhand_pose_raw_.linear()(2, 2) = msg.thirdRow[2];
 
 	hmd_lhand_pose_raw_.translation()(0) = msg.firstRow[3];
 	hmd_lhand_pose_raw_.translation()(1) = msg.secondRow[3];
 	hmd_lhand_pose_raw_.translation()(2) = msg.thirdRow[3];
-  
-  retarget_controller_.setArmTarget(hmd_lhand_pose_raw_, 3);
+    
+  retarget_controller_.setTrackerTarget(hmd_lhand_pose_raw_, 3);
 }
 
 void ControlBase::RightHandTrackerCallback(const VR::matrix_3_4 &msg)
 {
   Eigen::Isometry3d hmd_rhand_pose_raw_;
-	hmd_rhand_pose_raw_.linear()(0, 0) = msg.firstRow[0];
-	hmd_rhand_pose_raw_.linear()(0, 1) = msg.firstRow[1];
-	hmd_rhand_pose_raw_.linear()(0, 2) = msg.firstRow[2];
 
-	hmd_rhand_pose_raw_.linear()(1, 0) = msg.secondRow[0];
-	hmd_rhand_pose_raw_.linear()(1, 1) = msg.secondRow[1];
-	hmd_rhand_pose_raw_.linear()(1, 2) = msg.secondRow[2];
-
-	hmd_rhand_pose_raw_.linear()(2, 0) = msg.thirdRow[0];
-	hmd_rhand_pose_raw_.linear()(2, 1) = msg.thirdRow[1];
-	hmd_rhand_pose_raw_.linear()(2, 2) = msg.thirdRow[2];
+	hmd_rhand_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_rhand_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_rhand_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
 
 	hmd_rhand_pose_raw_.translation()(0) = msg.firstRow[3];
 	hmd_rhand_pose_raw_.translation()(1) = msg.secondRow[3];
 	hmd_rhand_pose_raw_.translation()(2) = msg.thirdRow[3];
   
-  retarget_controller_.setArmTarget(hmd_rhand_pose_raw_, 5);
+  retarget_controller_.setTrackerTarget(hmd_rhand_pose_raw_, 5);
 
 }
 
 void ControlBase::LeftElbowTrackerCallback(const VR::matrix_3_4 &msg)
 {
+
   Eigen::Isometry3d hmd_lupperarm_pose_raw_;
 
-	hmd_lupperarm_pose_raw_.linear()(0, 0) = msg.firstRow[0];
-	hmd_lupperarm_pose_raw_.linear()(0, 1) = msg.firstRow[1];
-	hmd_lupperarm_pose_raw_.linear()(0, 2) = msg.firstRow[2];
-
-	hmd_lupperarm_pose_raw_.linear()(1, 0) = msg.secondRow[0];
-	hmd_lupperarm_pose_raw_.linear()(1, 1) = msg.secondRow[1];
-	hmd_lupperarm_pose_raw_.linear()(1, 2) = msg.secondRow[2];
-
-	hmd_lupperarm_pose_raw_.linear()(2, 0) = msg.thirdRow[0];
-	hmd_lupperarm_pose_raw_.linear()(2, 1) = msg.thirdRow[1];
-	hmd_lupperarm_pose_raw_.linear()(2, 2) = msg.thirdRow[2];
+	hmd_lupperarm_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_lupperarm_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_lupperarm_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
 
 	hmd_lupperarm_pose_raw_.translation()(0) = msg.firstRow[3];
 	hmd_lupperarm_pose_raw_.translation()(1) = msg.secondRow[3];
 	hmd_lupperarm_pose_raw_.translation()(2) = msg.thirdRow[3];
 
-  retarget_controller_.setArmTarget(hmd_lupperarm_pose_raw_, 2);
+  retarget_controller_.setTrackerTarget(hmd_lupperarm_pose_raw_, 2);
 
 }
 
@@ -439,24 +424,72 @@ void ControlBase::RightElbowTrackerCallback(const VR::matrix_3_4 &msg)
 {
   Eigen::Isometry3d hmd_rupperarm_pose_raw_;
 
-	hmd_rupperarm_pose_raw_.linear()(0, 0) = msg.firstRow[0];
-	hmd_rupperarm_pose_raw_.linear()(0, 1) = msg.firstRow[1];
-	hmd_rupperarm_pose_raw_.linear()(0, 2) = msg.firstRow[2];
-
-	hmd_rupperarm_pose_raw_.linear()(1, 0) = msg.secondRow[0];
-	hmd_rupperarm_pose_raw_.linear()(1, 1) = msg.secondRow[1];
-	hmd_rupperarm_pose_raw_.linear()(1, 2) = msg.secondRow[2];
-
-	hmd_rupperarm_pose_raw_.linear()(2, 0) = msg.thirdRow[0];
-	hmd_rupperarm_pose_raw_.linear()(2, 1) = msg.thirdRow[1];
-	hmd_rupperarm_pose_raw_.linear()(2, 2) = msg.thirdRow[2];
+	hmd_rupperarm_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_rupperarm_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_rupperarm_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
 
 	hmd_rupperarm_pose_raw_.translation()(0) = msg.firstRow[3];
 	hmd_rupperarm_pose_raw_.translation()(1) = msg.secondRow[3];
 	hmd_rupperarm_pose_raw_.translation()(2) = msg.thirdRow[3];
 
-  retarget_controller_.setArmTarget(hmd_rupperarm_pose_raw_, 4);
+  retarget_controller_.setTrackerTarget(hmd_rupperarm_pose_raw_, 4);
   
+}
+
+void ControlBase::HmdCallback(const VR::matrix_3_4 &msg)
+{
+  Eigen::Isometry3d hmd_head_pose_raw_;
+
+	hmd_head_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_head_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_head_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
+
+	hmd_head_pose_raw_.translation()(0) = msg.firstRow[3];
+	hmd_head_pose_raw_.translation()(1) = msg.secondRow[3];
+	hmd_head_pose_raw_.translation()(2) = msg.thirdRow[3];
+
+  retarget_controller_.setHMDTarget(hmd_head_pose_raw_);
+
+}
+
+void ControlBase::ChestTrackerCallback(const VR::matrix_3_4 &msg)
+{
+  Eigen::Isometry3d hmd_chest_pose_raw_;
+
+	hmd_chest_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_chest_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_chest_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
+
+	hmd_chest_pose_raw_.translation()(0) = msg.firstRow[3];
+	hmd_chest_pose_raw_.translation()(1) = msg.secondRow[3];
+	hmd_chest_pose_raw_.translation()(2) = msg.thirdRow[3];
+
+  retarget_controller_.setTrackerTarget(hmd_chest_pose_raw_, 1);
+}
+
+void ControlBase::PelvisTrackerCallback(const VR::matrix_3_4 &msg)
+{
+  Eigen::Isometry3d hmd_pelv_pose_raw_;
+
+	hmd_pelv_pose_raw_.linear().block(0, 0, 1, 3) = Eigen::VectorXd::Map(msg.firstRow.data(), 3);
+	hmd_pelv_pose_raw_.linear().block(1, 0, 1, 3) = Eigen::VectorXd::Map(msg.secondRow.data(), 3);
+	hmd_pelv_pose_raw_.linear().block(2, 0, 1, 3) = Eigen::VectorXd::Map(msg.thirdRow.data(), 3);
+
+	hmd_pelv_pose_raw_.translation()(0) = msg.firstRow[3];
+	hmd_pelv_pose_raw_.translation()(1) = msg.secondRow[3];
+	hmd_pelv_pose_raw_.translation()(2) = msg.thirdRow[3];
+
+  retarget_controller_.setTrackerTarget(hmd_pelv_pose_raw_, 0);
+}
+
+void ControlBase::PoseCalibrationCallback(const std_msgs::Int8 &msg)
+{
+  retarget_controller_.setPoseCalibrationStatus(msg.data);
+}
+
+void ControlBase::TrackerStatusCallback(const std_msgs::Bool &msg)
+{
+  retarget_controller_.setTrackerStatus(msg.data);
 }
 
 }

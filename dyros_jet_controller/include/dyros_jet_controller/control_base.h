@@ -18,6 +18,8 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Float32MultiArray.h>
+#include <std_msgs/Int8.h>
+
 #include <sensor_msgs/JointState.h>
 #include <sensor_msgs/Imu.h>
 #include <geometry_msgs/WrenchStamped.h>
@@ -181,8 +183,6 @@ private:
 
   ros::Subscriber vive_tracker_pose_calibration_sub;
 
-  ros::Subscriber exo_suit_sub;
-  ros::Subscriber azure_kinect_sub;
 
   // TODO: realtime_tools
   dyros_jet_msgs::JointControlFeedback joint_control_feedback_;
@@ -204,11 +204,16 @@ private:
   void shutdownCommandCallback(const std_msgs::StringConstPtr& msg);
   void jointControlActionCallback(const dyros_jet_msgs::JointControlGoalConstPtr &goal);
 
-  //RETARGET
+  //RETARGET CALLBACK
   void LeftHandTrackerCallback(const VR::matrix_3_4 &msg);
   void RightHandTrackerCallback(const VR::matrix_3_4 &msg);
   void RightElbowTrackerCallback(const VR::matrix_3_4 &msg);
   void LeftElbowTrackerCallback(const VR::matrix_3_4 &msg);
+  void ChestTrackerCallback(const VR::matrix_3_4 &msg);
+  void PelvisTrackerCallback(const VR::matrix_3_4 &msg);
+  void HmdCallback(const VR::matrix_3_4 &msg);
+  void PoseCalibrationCallback(const std_msgs::Int8 &msg);
+  void TrackerStatusCallback(const std_msgs::Bool &msg);
 private:
 
   void makeIDInverseList();
