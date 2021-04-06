@@ -13,11 +13,10 @@ void RetargetController::compute()
   ros::param::get("/retarget/control_flag", control_flag_);
   ros::param::get("/retarget/initpose_flag", initpose_flag_);
   ros::param::get("/retarget/save_flag", save_flag_);
-  ros::param::get("/retarget/still_pose_flag", still_pose_flag_);
+  // ros::param::get("/retarget/still_pose_flag", still_pose_flag_);
 
   poseCalibration(); //human motion calibration
   updateKinematics(desired_q_virtual_, desired_q_dot_virtual_);
-
   //go to still pose
   if(!initpose_flag_)
   {
@@ -39,7 +38,7 @@ void RetargetController::compute()
     if (control_time_ > still_pose_start_time_ + still_pose_control_time_)
     {
       still_pose_flag_ = true;
-      ros::param::set("/retarget/still_pose_flag", true);
+      // ros::param::set("/retarget/still_pose_flag", true);
       setInitRobotPose();
 
     }
@@ -48,12 +47,31 @@ void RetargetController::compute()
 
   if (control_flag_ && initpose_flag_)
   {
-    //map_human2robot data
-    //processingrobotmotion - filter(lowpass)
-    //need waist control
-    armJacobianControl();
-    // logging();
+    if (retarget_is_first_)
+    {
+      ROS_INFO("START RETARGET CONTROL!");
+      retarget_is_first_ = false;
+      retarget_start_time_ = control_time_;
+      for (int i=1; i < 6; i++)
+      {
+        master_.tracker_poses_init_[i] = master_.tracker_poses_[i];
+        master_.tracker_poses_prev_[i] = master_.tracker_poses_[i];
+        
+      }
+      master_.shoulder_poses_init_[0] = master_.shoulder_poses_[0];
+      master_.shoulder_poses_init_[1] = master_.shoulder_poses_[1];
 
+      master_.shoulder_poses_prev_[0] = master_.shoulder_poses_[0];
+      master_.shoulder_poses_prev_[1] = master_.shoulder_poses_[1];
+      
+      std::cout<<"done_init\n";
+    }
+    mapping();
+    processRobotMotion();
+    armJacobianControl();
+    waistControl();
+    updataMotionData();
+    logging();
   }
   // std::cout<<"diff q "<<(desired_q_.segment<14>(joint_start_id_[0]) - current_q_.segment<14>(joint_start_id_[0])).norm()<<std::endl;
   // std::cout<<"\n\n";
@@ -61,15 +79,32 @@ void RetargetController::compute()
 
 void RetargetController::writeDesired(const unsigned int *mask, VectorQd& desired_q)
 {
-  for(unsigned int i=11; i<total_dof_; i++)
+  for(unsigned int i=12; i<total_dof_; i++)
   {
     
     if(initpose_flag_)
     {
-      
       desired_q(i) = desired_q_(i);
     }
   }
+}
+
+void RetargetController::waistControl()
+{
+  unsigned int waist_ind = 12;
+  double q_waist_yaw = desired_q_(waist_ind);
+
+  double q_dot_waist_desired = 0.0;
+
+  // Eigen::AngleAxisd ang_axis(slave_.tracker_poses_[1].linear());
+  double error = 0.0;
+  error = (slave_.tracker_poses_[1].linear().eulerAngles(0, 1, 2)(2) - q_waist_yaw);
+  q_dot_waist_desired = rot_gain_ * error;
+  
+  std::cout<<q_dot_waist_desired<<std::endl;
+
+  desired_q_dot_(waist_ind) = q_dot_waist_desired;
+  desired_q_(waist_ind) = q_dot_waist_desired/hz_ + q_waist_yaw;
 }
 
 void RetargetController::armJacobianControl()
@@ -90,7 +125,7 @@ void RetargetController::armJacobianControl()
 
 void RetargetController::updateArmJacobianFromDesired()
 {
-  const double inv_damping = -1e-8;
+  const double inv_damping = -1e-3;
   for (int i=0; i<4; i++)
   {
     Eigen::Matrix<double, 6, 7> jacobian_temp;
@@ -109,6 +144,10 @@ void RetargetController::updateArmJacobianFromDesired()
 void RetargetController::setTrackerTarget(Eigen::Isometry3d T, unsigned int tracker_id)
 {
   //translation
+  if (retarget_is_first_)
+    std::cout <<"Populate Raw data "<<tracker_id<<std::endl;
+    // std::cout<<"Tracker: "<< T.translation().transpose()<<std::endl;
+    // std::cout<<"Tracker: "<< T.linear()<<std::endl;
   master_.tracker_poses_raw_[tracker_id] = T;
 }
 
@@ -146,6 +185,23 @@ void RetargetController::getArmJacobian
   RigidBodyDynamics::CalcPointJacobian6D(model_desired_, desired_q_virtual_, 
                                          model_desired_.GetBodyId(arm_joint_name_[id]),
                                          Eigen::Vector3d::Zero(), full_jacobian, false);
+
+
+  // std::cout<<full_jacobian<<std::endl;
+  jacobian.block<3, 7>(0, 0) = full_jacobian.block<3, 7>(3, joint_start_id_[id] + 6);
+  jacobian.block<3, 7>(3, 0) = full_jacobian.block<3, 7>(0, joint_start_id_[id] + 6); 
+
+}
+
+void RetargetController::getArmJacobian
+(unsigned int id, Eigen::Matrix<double, 6, 7> &jacobian, Eigen::Vector3d local_offset)
+{
+  Eigen::MatrixXd full_jacobian(6, DyrosJetModel::MODEL_WITH_VIRTUAL_DOF);
+  full_jacobian.setZero();
+
+  RigidBodyDynamics::CalcPointJacobian6D(model_desired_, desired_q_virtual_, 
+                                         model_desired_.GetBodyId(arm_joint_name_[id]),
+                                         local_offset, full_jacobian, false);
 
 
   // std::cout<<full_jacobian<<std::endl;
@@ -241,6 +297,7 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
   Eigen::Vector6d hand_vel, elbow_vel;
   //hand velocity
   Eigen::VectorXd w_error = -DyrosMath::getPhi(T_whand.linear(), slave_.tracker_poses_[hand_ind + 2].linear());
+  // w_error.setZero();
   Eigen::VectorXd v_error = (slave_.tracker_poses_[hand_ind + 2].translation() - T_whand.translation());
 
   hand_vel << v_error, w_error;
@@ -252,14 +309,24 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
   elbow_vel << v_error, w_error;
   elbow_vel = Kp_task_.asDiagonal() * elbow_vel;
 
-  Hess = hand_coeff_ * jac_hand_[hand_ind].transpose() * jac_hand_[hand_ind] + \
-         elbow_coeff_ * null_[hand_ind].transpose()*jac_hand_[elbow_ind].transpose() * jac_hand_[elbow_ind] * null_[hand_ind];
+  w_error(1, 0) = 0.0; //body y 
 
-  grad = - hand_coeff_ * jac_hand_[hand_ind].transpose() * hand_vel + \
-         - elbow_coeff_ * null_[hand_ind].transpose()*jac_hand_[elbow_ind].transpose()*(elbow_vel - jac_hand_[elbow_ind] * jac_hand_pinv_[hand_ind] * hand_vel);
+  Eigen::Matrix<double, 9, 7> J_stack;
+
+  J_stack.block(0, 0, 6, 7) = jac_hand_[hand_ind];
+  J_stack.block(6, 0, 3, 7) = jac_hand_[elbow_ind].block(3, 0, 3, 7);
+
+  Hess = J_stack.transpose() * J_stack;
+  grad =  - jac_hand_[hand_ind].transpose() * hand_vel - jac_hand_[elbow_ind].block(3, 0, 3, 7).transpose()*w_error;
+
+  // Hess = hand_coeff_ * jac_hand_[hand_ind].transpose() * jac_hand_[hand_ind] + \
+  //        elbow_coeff_ * null_[hand_ind].transpose()*jac_hand_[elbow_ind].transpose() * jac_hand_[elbow_ind] * null_[hand_ind];
+
+  // grad = - hand_coeff_ * jac_hand_[hand_ind].transpose() * hand_vel
+  //        - elbow_coeff_ * null_[hand_ind].transpose()*jac_hand_[elbow_ind].transpose()*(elbow_vel - jac_hand_[elbow_ind] * desired_q_dot_.segment<7>(joint_start_id_[hand_ind]));
   
   A = jac_hand_[hand_ind];
-
+  
   Eigen::VectorXd q = desired_q_.segment<7>(joint_start_id_[hand_ind]);
 
   if (id == 0)//left
@@ -288,6 +355,8 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
   qp_arms_[id].UpdateMinProblem(Hess, grad);
   qp_arms_[id].UpdateSubjectToAx(A, lbA, ubA);
   qp_arms_[id].UpdateSubjectToX(lb, ub);
+  // std::cout<<"ee_"<<id<<" error : "<<hand_vel.transpose()<<std::endl;
+  // qp_arms_[id].PrintMinProb();
 
   Eigen::VectorXd qpres, q_dot_solution;
 	if(qp_arms_[id].SolveQPoases(100, qpres))
@@ -297,6 +366,7 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
 	else
 	{
 		q_dot_solution.setZero(num_joint_);
+    qp_arms_[id].InitializeProblemSize(num_joint_, num_task_);
 	}
 
   return q_dot_solution;
@@ -310,6 +380,8 @@ void RetargetController::parseToml(std::string &toml_path)
   auto& robot = toml::find(data, "Robot");
   rot_gain_ = toml::find<double>(robot, "rot_gain");
   trans_gain_ = toml::find<double>(robot, "trans_gain");
+  elbow_gain_ = toml::find<double>(robot, "elbow_gain");
+
   double arm_length = toml::find<double>(robot, "arm_length_max");
   slave_.arm_length_[0] = arm_length;
   slave_.arm_length_[1] = arm_length;
@@ -368,8 +440,8 @@ void RetargetController::parseToml(std::string &toml_path)
 
   still_pose_control_time_ = toml::find<double>(retarget_data, "still_pose_control_time");
   still_criteria_ = toml::find<double>(retarget_data, "still_criteria");
-
-
+  cutoff_freq_ = toml::find<double>(retarget_data, "cutoff_freq");
+  retarget_warmup_time_ = toml::find<double>(retarget_data, "warm_up_time");
   //parsing experiment data
   auto& exp_paths = toml::find(data, "Exp");
   file_path_ = toml::find<std::string>(exp_paths, "data_file_path");
@@ -392,6 +464,10 @@ void RetargetController::getBasisPosition()
 
 void RetargetController::setMasterScale() //Assume 3 basis position is acheive;
 {
+  /**
+   * Estimate shoulder location from chest frame
+   * Estimate arm length
+   **/
   //simpliest shoulder location estimation
   Eigen::Vector3d lsh_tmp, rsh_tmp;
   lsh_tmp(0) = (calib_basis_position_[0](0) + calib_basis_position_[1](0)) / 2.0; //x_still, x_t
@@ -418,8 +494,8 @@ void RetargetController::setMasterScale() //Assume 3 basis position is acheive;
   //shoulder_width
   double sh_width = (lsh_tmp - rsh_tmp).norm();
 
-  master_.chest2shoulder_offset_[0] = lsh_tmp - master_.tracker_poses_[1].translation();
-  master_.chest2shoulder_offset_[1] = rsh_tmp - master_.tracker_poses_[1].translation();
+  master_.chest2shoulder_offset_[0] = lsh_tmp;// + master_.tracker_poses_[1].translation();
+  master_.chest2shoulder_offset_[1] = rsh_tmp;// + master_.tracker_poses_[1].translation();
 
   master_.shoulder_width_ = sh_width;
   master_.arm_length_[0] = l_arm_len;
@@ -430,23 +506,26 @@ void RetargetController::setMasterScale() //Assume 3 basis position is acheive;
 
 void RetargetController::poseCalibration()
 {
-  //use only z rotation
-  Eigen::Vector3d master_pelv_rpy;
-	Eigen::Matrix3d master_pelv_yaw_rot;
-	master_pelv_rpy = DyrosMath::rot2Euler(master_.tracker_poses_raw_[0].linear());
-	master_pelv_yaw_rot = DyrosMath::rotateWithZ(master_pelv_rpy(2));
-	master_.tracker_poses_[0].linear() = master_pelv_yaw_rot;
-  master_.tracker_poses_[0].translation() = master_.tracker_poses_raw_[0].translation();
-  
-
+  /**
+   * change tracker world frame to base frame
+   * use only z rotation for chest(1) tracker
+   **/
   //raw data into pelv frame
   for (int i=1; i<6; i++)
   {
-    master_.tracker_poses_[i] = master_.tracker_poses_[0].inverse() * master_.tracker_poses_raw_[i];
+    master_.tracker_poses_[i] = master_.tracker_poses_raw_[0].inverse() * master_.tracker_poses_raw_[i];
+    // std::cout<<i<<" master tracker post : "<<master_.tracker_poses_[i].translation().transpose()<<std::endl;
   }
 
-  master_.tracker_poses_[3].translation() = master_.tracker_poses_[3].linear() * tracker_offset_;
-  master_.tracker_poses_[5].translation() = master_.tracker_poses_[5].linear() * tracker_offset_;
+  //chest use only z rotation
+  Eigen::Vector3d master_pelv_rpy;
+	Eigen::Matrix3d master_pelv_yaw_rot;
+	master_pelv_rpy = DyrosMath::rot2Euler(master_.tracker_poses_raw_[1].linear());
+	master_pelv_yaw_rot = DyrosMath::rotateWithZ(master_pelv_rpy(2));
+	master_.tracker_poses_[1].linear() = master_pelv_yaw_rot;
+
+  // master_.tracker_poses_[3].translation() = master_.tracker_poses_[3].linear() * tracker_offset_;
+  // master_.tracker_poses_[5].translation() = master_.tracker_poses_[5].linear() * tracker_offset_;
   
   if (!check_pose_calibration_[1] && mode_==1) //Attention
     getBasisPosition();
@@ -463,8 +542,8 @@ void RetargetController::poseCalibration()
 
   for (int i=0; i<2; i++)
   {
-    //T_pelv2chest*T_chest2shoulder
-    master_.shoulder_poses_[i].translation() = master_.chest2shoulder_offset_[i] + master_.tracker_poses_[1].translation();
+    //shoulder position in chest frame
+    master_.shoulder_poses_[i].translation() = master_.chest2shoulder_offset_[i];// + master_.tracker_poses_[1].translation();
     master_.shoulder_poses_[i].linear() = master_.tracker_poses_[1].linear();
   }
 }
@@ -473,18 +552,22 @@ void RetargetController::setStillPose()
 {
   //translation
   //left
+  Eigen::Isometry3d T_el[2];
+  getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[0]), T_el[0]);
+  getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[2]), T_el[1]);
+
   Eigen::Vector3d init_position, final_position, zero_vector;
   zero_vector.setZero();
   init_position = slave_.tracker_poses_init_[3].translation();
   final_position = robot_still_pose_[0].translation();
-  slave_.tracker_poses_[2].translation() = Eigen::Vector3d::Zero();
+  slave_.tracker_poses_[2].translation() = T_el[0].translation();
   slave_.tracker_poses_[3].translation() = DyrosMath::cubicVector(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
                                                                   init_position, final_position,
                                                                   zero_vector, zero_vector);
   //right
   init_position = slave_.tracker_poses_init_[5].translation();
   final_position = robot_still_pose_[1].translation();
-  slave_.tracker_poses_[4].translation() = Eigen::Vector3d::Zero();
+  slave_.tracker_poses_[4].translation() =T_el[1].translation();
   slave_.tracker_poses_[5].translation() = DyrosMath::cubicVector(control_time_, still_pose_start_time_, still_pose_start_time_ + still_pose_control_time_,
                                                                   init_position, final_position,
                                                                   zero_vector, zero_vector);
@@ -500,51 +583,51 @@ void RetargetController::setStillPose()
         
 }
 
-void RetargetController::mapHuman2RobotMotion()
+void RetargetController::mapping()
 {
-  /*
-    solvind A_h w = b_h to get h2r position coefficient
-    A_r * w* = b_r, where b_r represetns mapped_robot position
-  */
-
+  
+  //solvind A_h w = b_h to get h2r position coefficient
+  //A_r * w* = b_r, where b_r represetns mapped_robot position
+  
+  // std::cout<<"is in???";
   Eigen::Matrix<double, 3, 4> A_h[2], A_r[2];
-  Eigen::Matrix<double, 4, 1> b_h[2], b_r[2];
+  Eigen::Matrix<double, 3, 1> b_h[2], b_r[2];
   Eigen::MatrixXd A_h_inv[2];
 
   A_h[0].setZero();
   A_h[1].setZero();
 
-  for (size_t i=0;i<3;i++)
+  for (int i=0;i<3;i++)
   {
-    A_h[0].block(0, i, 3, 1) = calib_basis_position_[i].head(3) - master_.shoulder_poses_[0].translation(); 
-    A_h[1].block(0, i, 3, 1) = calib_basis_position_[i].tail(3) - - master_.shoulder_poses_[1].translation();
+    A_h[0].block(0, i, 3, 1) = calib_basis_position_[i].head(3) - master_.shoulder_poses_[0].translation();
+    A_h[1].block(0, i, 3, 1) = calib_basis_position_[i].tail(3) - master_.shoulder_poses_[1].translation();
     
   }
-  A_h[0].block(0, 3, 3, 1) = master_.shoulder_poses_[1].translation() - master_.shoulder_poses_[0].translation() //shoulder
-  A_h[1].block(0, 3, 3, 1) = master_.shoulder_poses_[0].translation() - master_.shoulder_poses_[1].translation() //shoulder
+  A_h[0].block(0, 3, 3, 1) = master_.shoulder_poses_[1].translation() - master_.shoulder_poses_[0].translation();//shoulder
+  A_h[1].block(0, 3, 3, 1) = master_.shoulder_poses_[0].translation() - master_.shoulder_poses_[1].translation(); //shoulder
 
-  //human shoulder2hand
-  b_h[0] = mater_.tracker_poses_[3].translation() - master_.shoulder_poses_[0].translation();
-  b_h[1] = mater_.tracker_poses_[5].translation() - master_.shoulder_poses_[1].translation();
+  // //human shoulder2hand
+  b_h[0] = master_.tracker_poses_[3].translation() -  master_.tracker_poses_[1].translation() - master_.shoulder_poses_[0].translation();
+  b_h[1] = master_.tracker_poses_[5].translation() -  master_.tracker_poses_[1].translation() - master_.shoulder_poses_[1].translation();
 
   A_r[0].setZero();
   A_r[1].setZero();
 
-  for (size_t i=0;i<3;i++)
+  for (int i=0;i<3;i++)
   {
-    double tmp1 = i - 0.5;
-    double tmp2 = i - 1.5;
+    double tmp1 = i - 1.5;
+    double tmp2 = i - 0.5;
     
-    A_r[0](i, 3- i) = - tmp1 / abs(tmp1) * slave_.arm_length_[0]; //+--
-    A_r[1]((i, 3- i) = - tmp2 / abs(tmp2) *slave_.arm_length_[0]; //++-
+    A_r[0](i, 2 - i) = - tmp1 / abs(tmp1) * slave_.arm_length_[0]; //++-
+    A_r[1](i, 2 - i) = - tmp2 / abs(tmp2) * slave_.arm_length_[1]; //+--
     
   }
 
   A_r[0](1, 3) = - slave_.shoulder_width_;
   A_r[1](1, 3) =   slave_.shoulder_width_;
   
-  //robot shoulder2hand
-  for (size_t i=0;i<2;i++)
+  // //robot shoulder2hand
+  for (int i=0;i<2;i++)
   {
     double mag;
     A_h_inv[i] = A_h[i].transpose() * (A_h[i] * A_h[i].transpose() + 1e-5 * Eigen::MatrixXd::Identity(3, 3)).inverse();
@@ -553,86 +636,201 @@ void RetargetController::mapHuman2RobotMotion()
     mag = std::max(0.1, std::min(b_r[i].norm(), slave_.arm_length_[i]));
     b_r[i] = mag * b_r[i].normalized();
   }
+  // std::cout<<"ROBOT A mat"<<A_r[0]<<A_r[1]<<std::endl;
+  // std::cout<<"ROBOT b mat"<<b_r[0].transpose()<<b_r[1].transpose()<<std::endl;
+  //-------------------------------------------------------------------------------------FRAME MATCHING----------------------------------------------------------------------------------
+  // //robot based2hand
+  Eigen::Isometry3d T_b2sh_l, T_b2sh_r;
+  getTransformFromID(model_desired_.GetBodyId(shoulder_rjoint_name_[0]), T_b2sh_l);
+  getTransformFromID(model_desired_.GetBodyId(shoulder_rjoint_name_[1]), T_b2sh_r);
 
-  //robot based2hand
-  Eigen::Isometry3d T_, T_whand;
-  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[3]), T_welbow);
-  getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[5]), T_whand);
-  slave_.tracker_posed[3] = 
-  slave_.tracker_posed[5] = 
+
+  slave_.tracker_poses_[3].translation() = T_b2sh_l.translation() + b_r[0];
+  slave_.tracker_poses_[5].translation() = T_b2sh_r.translation() + b_r[1]; 
   
+  //hand rotation
+  slave_.tracker_poses_[3].linear() = master_.tracker_poses_[3].linear() * DyrosMath::rotateWithZ(-M_PI * 0.5) * DyrosMath::rotateWithX(-M_PI * 0.5);
+  slave_.tracker_poses_[5].linear() = master_.tracker_poses_[5].linear() * DyrosMath::rotateWithZ(M_PI * 0.5) * DyrosMath::rotateWithX(M_PI * 0.5);
+  // slave_.tracker_poses_[3].linear() = master_.tracker_poses_[3].linear();
+  // slave_.tracker_poses_[5].linear() = master_.tracker_poses_[5].linear();
 
+  // elbow translation
+  b_h[0] = master_.tracker_poses_[2].translation() -  master_.tracker_poses_[1].translation() - master_.shoulder_poses_[0].translation();
+  b_h[1] = master_.tracker_poses_[4].translation() -  master_.tracker_poses_[1].translation() - master_.shoulder_poses_[1].translation();
+
+  A_r[0].setZero();
+  A_r[1].setZero();
+
+  for (int i=0;i<3;i++)
+  {
+    double tmp1 = i - 1.5;
+    double tmp2 = i - 0.5;
+    
+    A_r[0](i, 2 - i) = - tmp1 / abs(tmp1) * slave_.arm_length_[0]; //++-
+    A_r[1](i, 2 - i) = - tmp2 / abs(tmp2) * slave_.arm_length_[1]; //+--
+    
+  }
+
+  A_r[0](1, 3) = - slave_.shoulder_width_;
+  A_r[1](1, 3) =   slave_.shoulder_width_;
   
+  // //robot shoulder2hand
+  for (int i=0;i<2;i++)
+  {
+    double mag;
+    A_h_inv[i] = A_h[i].transpose() * (A_h[i] * A_h[i].transpose() + 1e-5 * Eigen::MatrixXd::Identity(3, 3)).inverse();
+    b_r[i] = A_r[i] * A_h_inv[i] * b_h[i];
+    //rescale
+    mag = std::max(0.1, std::min(b_r[i].norm(), slave_.arm_length_[i]/2.0));
+    b_r[i] = mag * b_r[i].normalized();
+  }
+  slave_.tracker_poses_[2].translation() = T_b2sh_l.translation() + b_r[0];
+  slave_.tracker_poses_[4].translation() = T_b2sh_r.translation() + b_r[1]; 
   
+  slave_.tracker_poses_[2].linear() = slave_.tracker_poses_init_[2].linear() * \
+                                      master_.tracker_poses_init_[2].linear().transpose() * master_.tracker_poses_[2].linear();
+  slave_.tracker_poses_[4].linear() = slave_.tracker_poses_init_[4].linear() * \
+                                      master_.tracker_poses_init_[4].linear().transpose() * master_.tracker_poses_[4].linear();
 
-
+  // //chest reduce rotation
+  Eigen::Matrix3d R_delchest = master_.tracker_poses_init_[1].linear().transpose() * master_.tracker_poses_[1].linear();
+  Eigen::AngleAxisd target_axis_angle(R_delchest);
+  Eigen::Matrix3d R_filtered;
+  R_filtered = Eigen::AngleAxisd(0.5*target_axis_angle.angle(), target_axis_angle.axis());
+  slave_.tracker_poses_[1].linear() = slave_.tracker_poses_init_[1].linear() * R_filtered;
 }
 
-// void RetargetController::logging()
-// {
-//   // mtx_lock_.lock();
+void RetargetController::processRobotMotion()
+{
+  // DyrosMath::lpf<3>(in, prev, hz_, cutoff_freq_)
+  for (int i = 1;i < 6; i++)
+  {
+    slave_.tracker_poses_[i].translation() = DyrosMath::lpf<3>(slave_.tracker_poses_[i].translation(), 
+                                                              slave_.tracker_poses_prev_[i].translation(),
+                                                              hz_, cutoff_freq_);
+    //rotation filter
+    Eigen::Matrix3d target_R = (slave_.tracker_poses_prev_[i].linear().transpose() * slave_.tracker_poses_[i].linear());
+    Eigen::AngleAxisd target_axis_angle(target_R);
 
-//   Eigen::Matrix<double, 3, 16> T_current, T_desired, T_command;
+    Eigen::Matrix3d R_filtered;
+    R_filtered = Eigen::AngleAxisd(DyrosMath::lpf(target_axis_angle.angle(), 0.0, hz_, cutoff_freq_), target_axis_angle.axis());
+    slave_.tracker_poses_[i].linear() = slave_.tracker_poses_prev_[i].linear() * R_filtered;
+  }
 
-//   T_current.setZero();
-//   T_desired.setZero();
-//   T_command.setZero();
+  if(control_time_ < retarget_warmup_time_ + retarget_start_time_) //prevent infeasible velocity
+  {
+    Eigen::Isometry3d T_desired_model;
+    Eigen::Vector3d init_position, final_position, zero_vector;
+    zero_vector.setZero();
 
-//   for(int i=0;i<4;i++)
-//   {
-//     //desired
-//     Eigen::Matrix<double,3,4> T_temp;
-//     Eigen::Isometry3d T1, T2;
+    for (int i=1;i<6;i++)
+    {
+      getTransformFromID(model_desired_.GetBodyId(tracker_rjoint_name_[i]), T_desired_model);
+      init_position = slave_.tracker_poses_init_[i].translation();
+      final_position = slave_.tracker_poses_[i].translation();
+      slave_.tracker_poses_[i].translation() = DyrosMath::cubicVector(control_time_, retarget_warmup_time_, retarget_warmup_time_ + retarget_start_time_,
+                                                                    init_position, final_position,
+                                                                    zero_vector, zero_vector);
+      slave_.tracker_poses_[i].linear() = DyrosMath::rotationCubic(control_time_, retarget_warmup_time_, retarget_warmup_time_ + retarget_start_time_,
+                                                                   slave_.tracker_poses_init_[i].linear(), slave_.tracker_poses_[i].linear());
+    }
+  }
+}
 
-//     T_temp.setZero();
-//     getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]), T1);
-//     T_temp<<T1.linear(), T1.translation();
-//     T_desired.block(0, i*4, 3, 4) = T_temp;
+void RetargetController::updataMotionData()
+{
+  for(int i=0;i<6;i++)
+  {
+    master_.tracker_poses_prev_[i] = master_.tracker_poses_[i];
+    slave_.tracker_poses_prev_[i] = slave_.tracker_poses_[i];
 
-//     T_temp.setZero();
-//     T_temp<<master_pose_arm_poses_[i].linear(), master_pose_arm_poses_[i].translation();
-//     T_command.block(0, i*4, 3, 4) = T_temp;
+    if (i==0 || i==1)
+    {
+      master_.shoulder_poses_prev_[i] = master_.shoulder_poses_[i];
+      slave_.shoulder_poses_prev_[i] = slave_.shoulder_poses_[i];
+    }
+  }
+}
 
-//     T_temp.setZero();
-//     model_.getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]) - 6, T2);
-//     T_temp<<T2.linear(), T2.translation();
-//     T_current.block(0, i*4, 3, 4) = T_temp;
-//   }
+void RetargetController::logging()
+{
+  // mtx_lock_.lock();
 
-//   stream_T_current_.push_back(T_current);
-//   stream_T_desired_.push_back(T_desired);
-//   stream_T_command_.push_back(T_command);
+  Eigen::Matrix<double, 3, 16> T_current, T_desired, T_command;
 
-//   //saving
-//   if (save_flag_)
-//   {
-//     std::cout<<"saved"<<std::endl;
-//     Eigen::MatrixXd V(3*stream_T_current.size(), 16);
+  T_current.setZero();
+  T_desired.setZero();
+  T_command.setZero();
 
-//     V.setZero();
-//     for(int i=0;i<stream_T_current.size();i++)
-//     {
-//         V.block(i*3, 0, 3, 16) = stream_T_current.at(i);
-//     }
-//     hf_->write("current", V);
+  for(int i=0;i<4;i++)
+  {
+    //desired
+    Eigen::Matrix<double,3,4> T_temp;
+    Eigen::Isometry3d T1, T2;
 
-//     V.setZero();
-//     for(int i=0;i<stream_T_current.size();i++)
-//     {
-//         V.block(i*3, 0, 3, 16) = stream_T_desired.at(i);
-//     }
-//     hf_->write("desired", V);
+    T_temp.setZero();
+    getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]), T1);
+    T_temp<<T1.linear(), T1.translation();
+    T_desired.block(0, i*4, 3, 4) = T_temp;
 
-//     V.setZero();
-//     for(int i=0;i<stream_T_current.size();i++)
-//     {
-//         V.block(i*3, 0, 3, 16) = stream_T_command.at(i);
-//     }
-//     hf_->write("command", V);
-//     ros::param::set("/retarget/save_flag", false);
+    T_temp.setZero();
+    T_temp<<slave_.tracker_poses_[i+2].linear(), slave_.tracker_poses_[i+2].translation();
+    T_command.block(0, i*4, 3, 4) = T_temp;
 
-//   }
-//   mtx_lock_.unlock();
-// }
+    T_temp.setZero();
+    model_.getTransformFromID(model_desired_.GetBodyId(arm_joint_name_[i]) - 6, T2);
+    T_temp<<T2.linear(), T2.translation();
+    T_current.block(0, i*4, 3, 4) = T_temp;
+    if (i==1 || i==3)
+    {
+      Eigen::AngleAxisd ang_axs_master(master_.tracker_poses_[i+2].linear());
+      Eigen::AngleAxisd ang_axs_slave(slave_.tracker_poses_[i+2].linear());
+      Eigen::AngleAxisd ang_axs_current(T2.linear()); 
+
+      // std::cout<<" \tslave : "<<slave_.tracker_poses_[i+2].translation().transpose()<<" | "<<ang_axs_slave.angle() * ang_axs_slave.axis().transpose()<<std::endl;
+      // std::cout<<" \trobot : "<<T2.translation().transpose()<<" | "<<ang_axs_current.angle() * ang_axs_current.axis().transpose()<<std::endl;
+    }
+  }
+  for(int i=1;i<6;i++)
+  {
+    Eigen::AngleAxisd ang_axs_master(master_.tracker_poses_[i].linear());
+    std::cout<<i<<"\tmaster : "<<master_.tracker_poses_[i].translation().transpose()<<" | "<<ang_axs_master.angle() * ang_axs_master.axis().transpose() <<std::endl;
+  }
+
+  stream_T_current_.push_back(T_current);
+  stream_T_desired_.push_back(T_desired);
+  stream_T_command_.push_back(T_command);
+
+  // saving
+  if (save_flag_)
+  {
+    std::cout<<"saved"<<std::endl;
+    Eigen::MatrixXd V(3*stream_T_current_.size(), 16);
+
+    V.setZero();
+    for(int i=0;i<stream_T_current_.size();i++)
+    {
+        V.block(i*3, 0, 3, 16) = stream_T_current_.at(i);
+    }
+    hf_->write("current", V);
+
+    V.setZero();
+    for(int i=0;i<stream_T_current_.size();i++)
+    {
+        V.block(i*3, 0, 3, 16) = stream_T_desired_.at(i);
+    }
+    hf_->write("desired", V);
+
+    V.setZero();
+    for(int i=0;i<stream_T_current_.size();i++)
+    {
+        V.block(i*3, 0, 3, 16) = stream_T_command_.at(i);
+    }
+    hf_->write("command", V);
+    ros::param::set("/retarget/save_flag", false);
+
+  }
+  // mtx_lock_.unlock();
+}
 
 }

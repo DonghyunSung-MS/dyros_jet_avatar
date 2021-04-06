@@ -637,6 +637,25 @@ static Eigen::Matrix<double, N, 1> lowPassFilter(Eigen::Matrix<double, N, 1> inp
   }
   return res;
 }
+static inline double lpf(double input, double prev_res, double samping_freq, double cutoff_freq)
+{
+    double rc = 1.0 / (cutoff_freq * 2 * 3.141592);
+    double dt = 1.0 / samping_freq;
+    double a = dt / (rc + dt);
 
+    return (prev_res + a * (input - prev_res));
+}
+
+template <int N>
+static Eigen::Matrix<double, N, 1> lpf(Eigen::Matrix<double, N, 1> input, Eigen::Matrix<double, N, 1> prev, double samping_freq, double cutoff_freq)
+{
+  Eigen::Matrix<double, N, 1> res;
+
+  for (int i = 0; i < N; i++)
+  {
+    res(i) = lpf(input(i), prev(i), samping_freq, cutoff_freq);
+  }
+  return res;
+}
 }
 #endif

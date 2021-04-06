@@ -67,7 +67,7 @@ public:
     ros::param::set("/retarget/control_flag", false);
     ros::param::set("/retarget/initpose_flag", false);
     ros::param::set("/retarget/save_flag", false);
-    ros::param::set("/retarget/still_pose_flag", false);
+    // ros::param::set("/retarget/still_pose_flag", false);
 
 
     //URDF
@@ -80,7 +80,8 @@ public:
     std::string cont_package_path = ros::package::getPath("dyros_jet_controller");
     std::string toml_path = cont_package_path + "/retarget_config.toml";
     parseToml(toml_path);
-    Kp_task_ << trans_gain_, trans_gain_, trans_gain_, rot_gain_, rot_gain_, rot_gain_;
+    Kp_task_.resize(6,1);
+    Kp_task_ << trans_gain_, trans_gain_, trans_gain_, rot_gain_, rot_gain_, rot_gain_;//, elbow_gain_;
 
     qp_arms_[0].InitializeProblemSize(num_joint_, num_task_);
     qp_arms_[1].InitializeProblemSize(num_joint_, num_task_);
@@ -133,7 +134,8 @@ private:
   // unsigned int joint_start_id_[4] = {13, 13, 20, 20};
   // unsigned int arm_joint_id[4] = {15, 19, 22, 26};
   
-  const char* arm_joint_name_[4] = {"L_ShoulderYaw_Link", "L_HandYaw_Link", "R_ShoulderYaw_Link", "R_HandYaw_Link"};
+  // const char* arm_joint_name_[4] = {"L_ShoulderYaw_Link", "L_HandYaw_Link", "R_ShoulderYaw_Link", "R_HandYaw_Link"};
+  const char* arm_joint_name_[4] = {"L_ElbowRoll_Link", "L_HandYaw_Link", "R_ElbowRoll_Link", "R_HandYaw_Link"};
   const char* tracker_rjoint_name_[6] = {"base_link", "WaistYaw_Link", "L_ShoulderYaw_Link", "L_HandYaw_Link", "R_ShoulderYaw_Link", "R_HandYaw_Link"};
   const char* shoulder_rjoint_name_[2] = {"L_ShoulderPitch_Link", "R_ShoulderPitch_Link"};
   const char* calib_mode_[6] = {"Run_Mode", "Attention", "T", "Forward Dress", "RESET Calibration", "Waiting Calibration"};
@@ -152,6 +154,7 @@ private:
   void armJacobianControl();
   void updateArmJacobianFromDesired();
   void getArmJacobian(unsigned int id, Eigen::Matrix<double, 6, 7> &jacobian);
+  void getArmJacobian(unsigned int id, Eigen::Matrix<double, 6, 7> &jacobian, Eigen::Vector3d local_offset);
   void getTransformFromID(unsigned int id, Eigen::Isometry3d &transform_matrix);
   void updateKinematics(const Eigen::VectorXd& q, const Eigen::VectorXd& qdot);
   void setInitRobotPose();
@@ -159,9 +162,12 @@ private:
   void setStillPose();
   void setMasterScale();
   void poseCalibration();
-  void mapHuman2RobotMotion();
+  void mapping();
+  void processRobotMotion();
+  void updataMotionData();
   Eigen::VectorXd QPIKArm(unsigned int id);//0 left ,1 right
-  // void logging();
+  void waistControl();
+  void logging();
 
   // Member Variable
   // model info
@@ -175,7 +181,8 @@ private:
   const double &control_time_; // updated by control_base
   double still_pose_start_time_;
   double still_pose_control_time_;
-
+  double retarget_start_time_;
+  double retarget_warmup_time_;
   UpperBodyPoses master_;
   UpperBodyPoses slave_;
 
@@ -203,6 +210,7 @@ private:
   bool check_pose_calibration_[5] = {false, false, false, false, false};
   bool real_exp_flag_ = false;
   bool tracker_status_ = false;
+  bool retarget_is_first_ = true;
 
   //QP Variable
   CQuadraticProgram qp_arms_[2];
@@ -224,10 +232,13 @@ private:
   
   double speed_reduce_rate = 20;
 
-  Eigen::Vector6d Kp_task_;
+  Eigen::VectorXd Kp_task_;
 
   double rot_gain_;
   double trans_gain_;
+  double elbow_gain_;
+
+  double cutoff_freq_;
 
   Eigen::Vector3d tracker_offset_;
 
