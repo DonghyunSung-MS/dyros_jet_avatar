@@ -91,6 +91,25 @@ rosrun dyros_jet_gui dyros_jet_gui
 ```sh
 roslaunch dyros_jet_launch mujoco.launch
 ```
+### Retarget Controller(conan based)
+
+1. Download Dependencies
+```sh
+pip install conan
+https://github.com/DonghyunSung-MS/conan_rbdl_jet.git
+https://github.com/DonghyunSung-MS/conan_h5cpp11.git
+```
+2. follow instruction in conan_h5cpp11 readme.md
+```sh
+# for each conan pkg 
+conan create .
+# catkin_ws/build
+conan install <path to conanfile>
+```
+
+3. Run GUI
+
+https://github.com/DonghyunSung-MS/retarget_gui.git
 
 ### How do I contribuite to this repo? ###
 * Read this http://wiki.ros.org/CppStyleGuide
