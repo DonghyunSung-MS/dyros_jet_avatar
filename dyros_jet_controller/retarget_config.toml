@@ -2,7 +2,7 @@
 [Robot]
 rot_gain = 20.0
 trans_gain = 500.0
-elbow_gain = 0.0
+elbow_gain = 10.0
 arm_length_max = 0.8 #0.60
 shoulder_width = 0.34
 
@@ -19,8 +19,8 @@ joint_vel_limit_upper = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 # joint_vel_limit_lower = [-100.0, -100.0, -100.0, -100.0, -100.0, -100.0, -100.0]
 # joint_vel_limit_upper = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
 # task 6 linear(3), angular(3)
-task_vel_limit_lower = [-2.0, -2.0,-2.0, -1.0,-1.0,-1.0]
-task_vel_limit_upper = [2.0, 2.0, 2.0, 1.0, 1.0, 1.0]
+task_vel_limit_lower = [-2.0, -2.0,-2.0, -3.0,-3.0,-3.0]
+task_vel_limit_upper = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0]
 # task_vel_limit_lower = [-2000.0, -2000.0,-2000.0, -1000.0,-1000.0,-1000.0]
 # task_vel_limit_upper = [2000.0, 2000.0, 2000.0, 1000.0, 1000.0, 1000.0]
 

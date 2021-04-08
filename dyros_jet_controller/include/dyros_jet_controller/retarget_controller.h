@@ -19,6 +19,8 @@
 #include <thread>
 #include <mutex>
 
+#include "VR/matrix_3_4.h"
+
 /*TODO:
 controlbase callback -> retarget set target
 HMD, Waist Controller
@@ -52,13 +54,15 @@ struct UpperBodyPoses
   Eigen::Isometry3d hmd_poses_prev_;
 };
 
+VR::matrix_3_4 isometry3d2VRmsg(Eigen::Isometry3d T);
+
 class RetargetController
 {
 public:
   //constructor
   static constexpr unsigned int PRIORITY = 32;
 
-  RetargetController(DyrosJetModel& model, const VectorQd& current_q, 
+  RetargetController(ros::NodeHandle &nh, DyrosJetModel& model, const VectorQd& current_q, 
                      const VectorQd& current_q_dot, const double hz, const double& control_time) :
     total_dof_(DyrosJetModel::HW_TOTAL_DOF), model_(model),
     current_q_(current_q), current_q_dot_(current_q_dot), hz_(hz), control_time_(control_time) 
@@ -111,7 +115,12 @@ public:
 
     hf_ = std::make_shared<HDF5::File>(file_path_ + file_name_, HDF5::File::Truncate);
 
-
+    for(int i=0;i<8;i++)
+    {
+      calib_tracker_pub_[i] = nh.advertise<VR::matrix_3_4>("/retarget/calib_tracker" + std::to_string(i), 1000);
+      robot_tracker_pub_[i] = nh.advertise<VR::matrix_3_4>("/retarget/robot_tracker" + std::to_string(i), 1000);
+    }
+    
   }
   // base class overide member function
   void compute();
@@ -122,7 +131,6 @@ public:
   //tracker status
   void setPoseCalibrationStatus(int mode); //1: attention, 2:T pose, 3:forward dress. 4:reset
   void setTrackerStatus(bool mode);
-
 
 private:
   //Retarget joint MAP
@@ -168,6 +176,7 @@ private:
   Eigen::VectorXd QPIKArm(unsigned int id);//0 left ,1 right
   void waistControl();
   void logging();
+  void publishProcessedMotion();
 
   // Member Variable
   // model info
@@ -244,6 +253,9 @@ private:
 
   Eigen::Isometry3d robot_still_pose_[2];
 
+
+  ros::Publisher calib_tracker_pub_[8];
+  ros::Publisher robot_tracker_pub_[8];
 };
 
 } // namespace dyros_jet_controller

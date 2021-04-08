@@ -14,7 +14,7 @@ ControlBase::ControlBase(ros::NodeHandle &nh, double Hz) :
   walking_controller_(model_, q_, q_dot_filtered_, Hz, control_time_),
   moveit_controller_(model_, q_, Hz),
   joint_control_as_(nh, "/dyros_jet/joint_control", false), // boost::bind(&ControlBase::jointControlActionCallback, this, _1), false
-  retarget_controller_(model_, q_, q_dot_filtered_, Hz, control_time_)
+  retarget_controller_(nh, model_, q_, q_dot_filtered_, Hz, control_time_)
   
 {
   //walking_cmd_sub_ = nh.subscribe

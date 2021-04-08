@@ -8,6 +8,29 @@ TODO
 namespace dyros_jet_controller
 {
 
+VR::matrix_3_4 isometry3d2VRmsg(Eigen::Isometry3d T)
+{
+  Eigen::Matrix4d T_mat = T.matrix();
+
+  VR::matrix_3_4 msg;
+
+  Eigen::RowVector4d rv1, rv2, rv3;
+  rv1 = T_mat.block(0, 0, 1, 4);
+  rv2 = T_mat.block(1, 0, 1, 4);
+  rv3 = T_mat.block(2, 0, 1, 4);
+  
+
+  std::vector<double> r1(&rv1[0], rv1.data() + rv1.cols()*rv1.rows());
+  std::vector<double> r2(&rv2[0], rv2.data() + rv2.cols()*rv2.rows());
+  std::vector<double> r3(&rv3[0], rv3.data() + rv3.cols()*rv3.rows());
+  
+  msg.firstRow = r1;
+  msg.secondRow = r2;
+  msg.thirdRow = r3;
+
+  return msg;
+}
+
 void RetargetController::compute()
 {
   ros::param::get("/retarget/control_flag", control_flag_);
@@ -18,6 +41,14 @@ void RetargetController::compute()
   poseCalibration(); //human motion calibration
   updateKinematics(desired_q_virtual_, desired_q_dot_virtual_);
   //go to still pose
+  if (!tracker_status_ || !control_flag_)
+  {
+    ros::param::set("/retarget/control_flag", false);
+    ros::param::set("/retarget/initpose_flag", false);
+    retarget_is_first_ = false;
+  }
+
+
   if(!initpose_flag_)
   {
     setInitRobotPose();
@@ -72,6 +103,7 @@ void RetargetController::compute()
     waistControl();
     updataMotionData();
     logging();
+    publishProcessedMotion();
   }
   // std::cout<<"diff q "<<(desired_q_.segment<14>(joint_start_id_[0]) - current_q_.segment<14>(joint_start_id_[0])).norm()<<std::endl;
   // std::cout<<"\n\n";
@@ -306,8 +338,9 @@ Eigen::VectorXd RetargetController::QPIKArm(unsigned int id)
   //elbow velocity
   w_error = -DyrosMath::getPhi(T_welbow.linear(), slave_.tracker_poses_[elbow_ind + 2].linear());
   v_error.setZero();
-  elbow_vel << v_error, w_error;
-  elbow_vel = Kp_task_.asDiagonal() * elbow_vel;
+  w_error *= elbow_gain_;
+  // elbow_vel << v_error, w_error;
+  // elbow_vel = elbow_gain * elbow_vel;
 
   w_error(1, 0) = 0.0; //body y 
 
@@ -791,11 +824,11 @@ void RetargetController::logging()
       // std::cout<<" \trobot : "<<T2.translation().transpose()<<" | "<<ang_axs_current.angle() * ang_axs_current.axis().transpose()<<std::endl;
     }
   }
-  for(int i=1;i<6;i++)
-  {
-    Eigen::AngleAxisd ang_axs_master(master_.tracker_poses_[i].linear());
-    std::cout<<i<<"\tmaster : "<<master_.tracker_poses_[i].translation().transpose()<<" | "<<ang_axs_master.angle() * ang_axs_master.axis().transpose() <<std::endl;
-  }
+  // for(int i=1;i<6;i++)
+  // {
+  //   Eigen::AngleAxisd ang_axs_master(master_.tracker_poses_[i].linear());
+  //   std::cout<<i<<"\tmaster : "<<master_.tracker_poses_[i].translation().transpose()<<" | "<<ang_axs_master.angle() * ang_axs_master.axis().transpose() <<std::endl;
+  // }
 
   stream_T_current_.push_back(T_current);
   stream_T_desired_.push_back(T_desired);
@@ -831,6 +864,26 @@ void RetargetController::logging()
 
   }
   // mtx_lock_.unlock();
+}
+
+void RetargetController::publishProcessedMotion()
+{
+  for(int i=0;i < 6;i++)
+  {
+    calib_tracker_pub_[i].publish(isometry3d2VRmsg(master_.tracker_poses_[i]));
+    robot_tracker_pub_[i].publish(isometry3d2VRmsg(slave_.tracker_poses_[i]));
+  }
+
+  Eigen::Isometry3d T;
+  T.translation() = master_.tracker_poses_[1].translation();
+  T.linear().setIdentity();
+  
+  calib_tracker_pub_[6].publish(isometry3d2VRmsg(T * master_.shoulder_poses_[0]));
+  calib_tracker_pub_[7].publish(isometry3d2VRmsg(T * master_.shoulder_poses_[1]));
+
+  robot_tracker_pub_[6].publish(isometry3d2VRmsg(slave_.shoulder_poses_[0]));
+  robot_tracker_pub_[7].publish(isometry3d2VRmsg(slave_.shoulder_poses_[1]));
+
 }
 
 }
